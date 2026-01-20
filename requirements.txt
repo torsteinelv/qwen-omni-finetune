@@ -1,0 +1,12 @@
+git+https://github.com/huggingface/transformers.git
+peft
+bitsandbytes
+accelerate
+datasets
+librosa
+soundfile
+scipy
+tensorboard
+protobuf
+sentencepiece
+huggingface_hub
