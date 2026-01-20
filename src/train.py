@@ -23,42 +23,38 @@ else:
     DATA_PATH = "./norsk_data/train.jsonl"
     OUTPUT_DIR = "./output"
 
-print(f"--- STARTER TRENING (Custom Wrapper Metode) ---")
+print(f"--- STARTER TRENING (Memory Fix Edition) ---")
 print(f"Data: {DATA_PATH}")
 
-# --- CUSTOM WRAPPER (Nøkkelen til suksess!) ---
+# --- CUSTOM WRAPPER (Oppdatert for å fikse lagringskrasj) ---
 class QwenOmniWrapper(nn.Module):
-    """
-    En enkel wrapper som sender data direkte til 'thinker' (hjernen).
-    Dette omgår _forward_unimplemented feilen i hovedmodellen.
-    """
     def __init__(self, omni_model):
         super().__init__()
         self.omni_model = omni_model
-        self.thinker = omni_model.thinker # Vi henter ut selve LLM-delen
+        # VIKTIG ENDRING: Vi lagrer IKKE self.thinker her lenger.
+        # Det skapte "Duplicate memory" feilen fordi PyTorch trodde vi hadde to modeller.
+        
         self.config = omni_model.config
         
-        # Kopier attributter som Trainer trenger for å være fornøyd
-        self.gradient_checkpointing_enable = self.thinker.gradient_checkpointing_enable
+        # Kopier attributter som Trainer trenger
+        self.gradient_checkpointing_enable = self.omni_model.thinker.gradient_checkpointing_enable
         self.save_pretrained = self.omni_model.save_pretrained
         self.can_generate = True 
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-        # Vi fjerner argumenter som Thinker ikke forstår (hvis de finnes)
         kwargs_clean = {k: v for k, v in kwargs.items() 
                        if k not in ['pixel_values', 'audio_values', 'video_values']}
         
-        # Send direkte til Thinker (som har en fungerende forward)
-        return self.thinker(
+        # Vi henter thinker dynamisk her i stedet for å ha den i __init__
+        return self.omni_model.thinker(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels,
             **kwargs_clean
         )
     
-    # Nødvendig for at Trainer skal kunne lagre
     def enable_input_require_grads(self):
-        self.thinker.enable_input_require_grads()
+        self.omni_model.thinker.enable_input_require_grads()
 
 
 def train():
@@ -94,13 +90,11 @@ def train():
     
     omni_model = prepare_model_for_kbit_training(omni_model)
 
-    # 4. INJISER LORA PÅ THINKER *FØR* WRAPPING
+    # 4. INJISER LORA PÅ THINKER
     print("Aktiverer LoRA på Thinker...")
     
-    # Vi henter ut thinker (hjernen)
     thinker = omni_model.thinker
     
-    # LoRA Config
     peft_config = LoraConfig(
         r=16, 
         lora_alpha=32, 
@@ -109,18 +103,15 @@ def train():
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     
-    # Påfør LoRA direkte på thinker
     thinker = get_peft_model(thinker, peft_config)
-    
-    # Sett den modifiserte thinkeren tilbake i hovedmodellen
     omni_model.thinker = thinker
 
-    # 5. WRAP MODELLEN (Fix for _forward_unimplemented)
+    # 5. WRAP MODELLEN
     print("Wrapper modellen...")
     model = QwenOmniWrapper(omni_model)
     
-    # Print trainable params (vi må spørre thinkeren inni wrapperen)
-    model.thinker.print_trainable_parameters()
+    # Print stats (må gå via omni_model nå)
+    model.omni_model.thinker.print_trainable_parameters()
 
     # 6. Last Data
     print(f"Laster datasett fra {DATA_PATH}...")
@@ -153,11 +144,11 @@ def train():
         num_train_epochs=1,
         logging_steps=10,
         save_strategy="steps",
-        save_steps=50,
+        save_steps=50, # Her den krasjet sist, nå skal det gå bra!
         fp16=True,
         optim="paged_adamw_8bit",
         report_to="tensorboard",
-        remove_unused_columns=False, # VIKTIG for custom wrapper
+        remove_unused_columns=False, 
         label_names=["labels"],
         ddp_find_unused_parameters=False
     )
@@ -178,8 +169,9 @@ def train():
     
     # 8. Lagre
     print(f"Lagrer ferdig adapter til {OUTPUT_DIR}/final_adapter...")
-    # Vi må lagre adapteren som ligger inni wrapperen -> inni thinkeren
-    model.thinker.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
+    
+    # VIKTIG: Vi lagrer KUN thinkeren, ikke hele wrapperen
+    model.omni_model.thinker.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
     tokenizer.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
 
     # 9. Opplasting
@@ -192,7 +184,7 @@ def train():
             from huggingface_hub import login
             login(token=hf_token)
             # Push adapteren
-            model.thinker.push_to_hub(hf_repo)
+            model.omni_model.thinker.push_to_hub(hf_repo)
             tokenizer.push_to_hub(hf_repo)
             print("✅ Opplasting fullført!")
         except Exception as e:
