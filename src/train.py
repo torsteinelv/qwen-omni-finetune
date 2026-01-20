@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import torch.nn as nn
 from transformers import (
     Qwen2_5OmniForConditionalGeneration, 
     AutoTokenizer, 
@@ -15,7 +16,6 @@ from datasets import load_dataset
 # --- KONFIGURASJON ---
 MODEL_ID = "Qwen/Qwen2.5-Omni-3B"
 
-# Automatisk sti-deteksjon
 if os.path.exists("/workspace/norsk_data/train.jsonl"):
     DATA_PATH = "/workspace/norsk_data/train.jsonl"
     OUTPUT_DIR = "/workspace/output"
@@ -23,8 +23,43 @@ else:
     DATA_PATH = "./norsk_data/train.jsonl"
     OUTPUT_DIR = "./output"
 
-print(f"--- STARTER TRENING ---")
+print(f"--- STARTER TRENING (Custom Wrapper Metode) ---")
 print(f"Data: {DATA_PATH}")
+
+# --- CUSTOM WRAPPER (Nøkkelen til suksess!) ---
+class QwenOmniWrapper(nn.Module):
+    """
+    En enkel wrapper som sender data direkte til 'thinker' (hjernen).
+    Dette omgår _forward_unimplemented feilen i hovedmodellen.
+    """
+    def __init__(self, omni_model):
+        super().__init__()
+        self.omni_model = omni_model
+        self.thinker = omni_model.thinker # Vi henter ut selve LLM-delen
+        self.config = omni_model.config
+        
+        # Kopier attributter som Trainer trenger for å være fornøyd
+        self.gradient_checkpointing_enable = self.thinker.gradient_checkpointing_enable
+        self.save_pretrained = self.omni_model.save_pretrained
+        self.can_generate = True 
+
+    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        # Vi fjerner argumenter som Thinker ikke forstår (hvis de finnes)
+        kwargs_clean = {k: v for k, v in kwargs.items() 
+                       if k not in ['pixel_values', 'audio_values', 'video_values']}
+        
+        # Send direkte til Thinker (som har en fungerende forward)
+        return self.thinker(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels,
+            **kwargs_clean
+        )
+    
+    # Nødvendig for at Trainer skal kunne lagre
+    def enable_input_require_grads(self):
+        self.thinker.enable_input_require_grads()
+
 
 def train():
     # 1. Last Tokenizer
@@ -33,20 +68,15 @@ def train():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 2. Last Konfigurasjon og Fiks Bugs
+    # 2. Last Konfigurasjon
     print("Laster konfigurasjon...")
     config = AutoConfig.from_pretrained(MODEL_ID, trust_remote_code=True)
-    
-    # --- VIKTIG BUGFIX ---
-    # Talker-modellen (lyd) har mye mindre vokabular enn tekst-modellen.
-    # Vi kan IKKE bruke tokenizer.pad_token_id (som er 151643+), for Talker har bare ~50k tokens.
-    # Vi setter den hardt til 0 for å unngå "AssertionError: Padding_idx must be within num_embeddings".
     if hasattr(config, "talker_config") and config.talker_config:
-        print("⚠️  PATCH: Setter talker_config.pad_token_id = 0 (Safe value).")
         config.talker_config.pad_token_id = 0
+    config.use_cache = False
 
-    # 3. Last Modell (4-bit QLoRA)
-    print("Laster modell (4-bit)...")
+    # 3. Last Hovedmodell
+    print("Laster hovedmodell...")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -54,40 +84,45 @@ def train():
         bnb_4bit_use_double_quant=True,
     )
     
-    model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
+    omni_model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         MODEL_ID, 
-        config=config,  # Bruker den fiksede konfigurasjonen
+        config=config,
         quantization_config=bnb_config, 
-        device_map="auto", 
+        device_map={"": 0},
         trust_remote_code=True
     )
     
-    # 4. Klargjør for trening
-    print("Klargjør modell for k-bit trening...")
-    model.gradient_checkpointing_enable()
-    model = prepare_model_for_kbit_training(model)
+    omni_model = prepare_model_for_kbit_training(omni_model)
+
+    # 4. INJISER LORA PÅ THINKER *FØR* WRAPPING
+    print("Aktiverer LoRA på Thinker...")
     
-    # Frys audio/visual delene
-    if hasattr(model, 'thinker'):
-        if hasattr(model.thinker, 'audio_tower'):
-            model.thinker.audio_tower.requires_grad_(False)
-        if hasattr(model.thinker, 'visual'):
-            model.thinker.visual.requires_grad_(False)
+    # Vi henter ut thinker (hjernen)
+    thinker = omni_model.thinker
     
     # LoRA Config
-    print("Aktiverer LoRA...")
     peft_config = LoraConfig(
         r=16, 
         lora_alpha=32, 
         lora_dropout=0.05, 
         bias="none", 
-        task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
+    
+    # Påfør LoRA direkte på thinker
+    thinker = get_peft_model(thinker, peft_config)
+    
+    # Sett den modifiserte thinkeren tilbake i hovedmodellen
+    omni_model.thinker = thinker
 
-    # 5. Last Data
+    # 5. WRAP MODELLEN (Fix for _forward_unimplemented)
+    print("Wrapper modellen...")
+    model = QwenOmniWrapper(omni_model)
+    
+    # Print trainable params (vi må spørre thinkeren inni wrapperen)
+    model.thinker.print_trainable_parameters()
+
+    # 6. Last Data
     print(f"Laster datasett fra {DATA_PATH}...")
     try:
         dataset = load_dataset("json", data_files=DATA_PATH, split="train")
@@ -95,15 +130,13 @@ def train():
         print(f"FEIL ved lasting av data: {e}")
         sys.exit(1)
 
-    # Preprosessering
     def preprocess_function(examples):
         texts = []
         for msg in examples["messages"]:
             if len(msg) > 2 and msg[2]["role"] == "assistant":
                 texts.append(msg[2]["content"])
             else:
-                texts.append(msg[-1]["content"])
-                
+                texts.append(msg[-1]["content"])     
         model_inputs = tokenizer(texts, truncation=True, padding="max_length", max_length=128)
         model_inputs["labels"] = model_inputs["input_ids"].copy()
         return model_inputs
@@ -111,10 +144,10 @@ def train():
     print("Tokeniserer data...")
     tokenized_dataset = dataset.map(preprocess_function, batched=True)
 
-    # 6. Treningsoppsett
+    # 7. Treningsoppsett
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=1,
+        per_device_train_batch_size=1, 
         gradient_accumulation_steps=8,
         learning_rate=2e-4,
         num_train_epochs=1,
@@ -124,7 +157,8 @@ def train():
         fp16=True,
         optim="paged_adamw_8bit",
         report_to="tensorboard",
-        remove_unused_columns=False,
+        remove_unused_columns=False, # VIKTIG for custom wrapper
+        label_names=["labels"],
         ddp_find_unused_parameters=False
     )
 
@@ -142,12 +176,13 @@ def train():
     print("=== STARTER TRENING NÅ ===")
     trainer.train()
     
-    # 7. Lagre
+    # 8. Lagre
     print(f"Lagrer ferdig adapter til {OUTPUT_DIR}/final_adapter...")
-    trainer.model.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
+    # Vi må lagre adapteren som ligger inni wrapperen -> inni thinkeren
+    model.thinker.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
     tokenizer.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
 
-    # 8. Opplasting
+    # 9. Opplasting
     hf_token = os.getenv("HF_TOKEN")
     hf_repo = os.getenv("HF_REPO")
 
@@ -156,7 +191,8 @@ def train():
         try:
             from huggingface_hub import login
             login(token=hf_token)
-            trainer.model.push_to_hub(hf_repo)
+            # Push adapteren
+            model.thinker.push_to_hub(hf_repo)
             tokenizer.push_to_hub(hf_repo)
             print("✅ Opplasting fullført!")
         except Exception as e:
