@@ -8,6 +8,8 @@ echo "============================================="
 echo "[1/2] Kjører data-forberedelse (data.py)..."
 python data.py
 
+prepare_talker.py
+
 # Sjekk om datafilen faktisk ble laget
 if [ -f "./norsk_data/train.jsonl" ]; then
     echo "Data OK! Fant train.jsonl."
@@ -19,7 +21,7 @@ fi
 echo "============================================="
 echo "[2/2] Starter trening (train.py)..."
 # Vi sender eventuelle argumenter videre til train.py
-python train.py "$@"
+python train_talker.py "$@"
 
 echo "============================================="
 echo "   JOBB FULLFØRT! Sjekk /workspace/output    "
