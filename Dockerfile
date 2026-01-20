@@ -1,27 +1,50 @@
-# Vi bruker NVIDIAs offisielle PyTorch image som base (inkluderer CUDA)
-FROM nvcr.io/nvidia/pytorch:24.02-py3
+# Vi bruker en offisiell PyTorch base som er stabil (CUDA 12.1 er veldig trygt for Qwen/BnB)
+FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-devel
 
-# Unngå interaktive spørsmål under bygging
-ENV DEBIAN_FRONTEND=noninteractive
+# Sett miljøvariabler for å unngå mas under installasjon
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PyTorch_CUDA_ALLOC_CONF=expandable_segments:True
 
-# Sett arbeidsmappe
+# 1. Systempakker (libsndfile1 er VIKTIG for lyd/audio prosessering)
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    libsndfile1 \
+    ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. Oppdater pip
+RUN pip install --upgrade pip
+
+# 3. FIX: Installer Torch og Torchvision SAMTIDIG for å garantere match
+# Dette erstatter den manuelle fiksen din.
+RUN pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+
+# 4. Installer Python-bibliotekene vi trenger til Qwen
+# Vi legger til 'soundfile' og 'librosa' siden dette er en lydmodell
+RUN pip install \
+    transformers \
+    peft \
+    bitsandbytes \
+    datasets \
+    accelerate \
+    scipy \
+    soundfile \
+    librosa \
+    tensorboard \
+    protobuf \
+    sentencepiece
+
+# 5. (Valgfritt) Flash Attention for hastighet (kan ta tid å bygge, kommenter ut hvis det feiler)
+# RUN pip install flash-attn --no-build-isolation
+
+# 6. Klargjør arbeidsmappen
 WORKDIR /workspace
 
-# Kopier requirements først (for bedre caching av docker layers)
-COPY requirements.txt .
+# 7. Kopier kildekoden din inn
+COPY src/ /workspace/
 
-# Installer biblioteker
-RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
-
-# Kopier kildekoden
-COPY src/ .
-
-# Gjør entrypoint-scriptet kjørbart
-RUN chmod +x entrypoint.sh
-
-# Opprett mapper for data og output som vi kan mounte til
-RUN mkdir -p /workspace/norsk_data /workspace/output
-
-# Start entrypoint scriptet når containeren kjører
-ENTRYPOINT ["./entrypoint.sh"]
+# Standard kommando (kan overstyres av Kubernetes yaml)
+CMD ["python", "train.py"]
