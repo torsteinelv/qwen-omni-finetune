@@ -4,6 +4,7 @@ import torch
 from transformers import (
     Qwen2_5OmniForConditionalGeneration, 
     AutoTokenizer, 
+    AutoConfig,  # <-- Lagt til denne for å fikse konfigurasjonen
     Trainer, 
     TrainingArguments,
     BitsAndBytesConfig
@@ -33,8 +34,19 @@ def train():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # 2. Last Modell (4-bit QLoRA)
-    print("Laster modell...")
+    # 2. Last Konfigurasjon og Fiks Bug
+    # Dette steget er nødvendig for å unngå "AttributeError: pad_token_id" krasjet
+    print("Laster konfigurasjon og patcher 'pad_token_id' bug...")
+    config = AutoConfig.from_pretrained(MODEL_ID, trust_remote_code=True)
+    
+    # Sjekk om talker_config mangler pad_token_id og sett den manuelt
+    if hasattr(config, "talker_config") and config.talker_config:
+        if not hasattr(config.talker_config, "pad_token_id") or config.talker_config.pad_token_id is None:
+            print("⚠️  PATCH: Setter manglende pad_token_id i talker_config.")
+            config.talker_config.pad_token_id = tokenizer.pad_token_id
+
+    # 3. Last Modell (4-bit QLoRA)
+    print("Laster modell (4-bit)...")
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -42,62 +54,82 @@ def train():
         bnb_4bit_use_double_quant=True,
     )
     
+    # Vi sender med den 'patched' config-en her
     model = Qwen2_5OmniForConditionalGeneration.from_pretrained(
         MODEL_ID, 
+        config=config,  # <--- Her bruker vi den fiksede konfigurasjonen
         quantization_config=bnb_config, 
         device_map="auto", 
         trust_remote_code=True
     )
     
-    # 3. Klargjør for trening
+    # 4. Klargjør for trening
+    print("Klargjør modell for k-bit trening...")
     model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
     
-    # Frys audio/visual delene for å spare VRAM
+    # Frys audio/visual delene for å spare VRAM (Vi trener kun tekst-hjernen nå)
     if hasattr(model, 'thinker'):
-        model.thinker.audio_tower.requires_grad_(False)
-        model.thinker.visual.requires_grad_(False)
+        if hasattr(model.thinker, 'audio_tower'):
+            model.thinker.audio_tower.requires_grad_(False)
+        if hasattr(model.thinker, 'visual'):
+            model.thinker.visual.requires_grad_(False)
     
     # LoRA Config
+    print("Aktiverer LoRA...")
     peft_config = LoraConfig(
-        r=16, lora_alpha=32, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
+        r=16, 
+        lora_alpha=32, 
+        lora_dropout=0.05, 
+        bias="none", 
+        task_type="CAUSAL_LM",
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]
     )
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    # 4. Last Data
-    print("Laster datasett...")
+    # 5. Last Data
+    print(f"Laster datasett fra {DATA_PATH}...")
     try:
         dataset = load_dataset("json", data_files=DATA_PATH, split="train")
-    except FileNotFoundError:
-        print(f"FEIL: Fant ikke {DATA_PATH}. Sjekk om data.py har kjørt.")
+    except Exception as e:
+        print(f"FEIL ved lasting av data: {e}")
         sys.exit(1)
 
-    # Korrekt batch-prosessering av meldinger
+    # Preprosessering
     def preprocess_function(examples):
-        # Henter tekst fra assistant-rollen (index 2 i listen av meldinger)
-        texts = [msg[2]["content"] for msg in examples["messages"]]
+        # Vi henter ut teksten modellen skal lære å si (Assistant svaret)
+        texts = []
+        for msg in examples["messages"]:
+            # Sjekk at vi har nok meldinger til å finne assistant svaret (index 2)
+            if len(msg) > 2 and msg[2]["role"] == "assistant":
+                texts.append(msg[2]["content"])
+            else:
+                # Fallback hvis strukturen er rar, ta siste melding
+                texts.append(msg[-1]["content"])
+                
         model_inputs = tokenizer(texts, truncation=True, padding="max_length", max_length=128)
         model_inputs["labels"] = model_inputs["input_ids"].copy()
         return model_inputs
 
+    print("Tokeniserer data...")
     tokenized_dataset = dataset.map(preprocess_function, batched=True)
 
-    # 5. Treningsoppsett
+    # 6. Treningsoppsett
     training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=1,
         gradient_accumulation_steps=8,
         learning_rate=2e-4,
-        num_train_epochs=1,                # Trener gjennom hele datasettet én gang
+        num_train_epochs=1,
         logging_steps=10,
         save_strategy="steps",
-        save_steps=100,
-        fp16=True,
+        save_steps=50,          # Lagrer litt oftere for sikkerhets skyld
+        fp16=True,              # Bruk fp16 for T4/L4 GPUer
         optim="paged_adamw_8bit",
         report_to="tensorboard",
-        remove_unused_columns=False
+        remove_unused_columns=False,
+        ddp_find_unused_parameters=False
     )
 
     trainer = Trainer(
@@ -111,15 +143,15 @@ def train():
         }
     )
 
-    print("Starter selve treningen...")
+    print("=== STARTER TRENING NÅ ===")
     trainer.train()
     
-    # 6. Lagre lokalt
-    print(f"Lagrer adapter til {OUTPUT_DIR}/final_adapter...")
+    # 7. Lagre lokalt
+    print(f"Lagrer ferdig adapter til {OUTPUT_DIR}/final_adapter...")
     trainer.model.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
     tokenizer.save_pretrained(os.path.join(OUTPUT_DIR, "final_adapter"))
 
-    # 7. Last opp til Hugging Face (Hvis env vars finnes)
+    # 8. Last opp til Hugging Face
     hf_token = os.getenv("HF_TOKEN")
     hf_repo = os.getenv("HF_REPO")
 
@@ -128,9 +160,10 @@ def train():
         try:
             from huggingface_hub import login
             login(token=hf_token)
+            # Vi må laste opp adapteren (peft model)
             trainer.model.push_to_hub(hf_repo)
             tokenizer.push_to_hub(hf_repo)
-            print("✅ Opplasting fullført!")
+            print("✅ Opplasting fullført! Modellen er live.")
         except Exception as e:
             print(f"❌ Feil ved opplasting: {e}")
     else:
