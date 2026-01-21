@@ -36,7 +36,7 @@ dataset = load_dataset(
     DATASET_ID, 
     CONFIG, 
     split="train", 
-    streaming=True, 
+    streaming=False, 
     trust_remote_code=True
 )
 
