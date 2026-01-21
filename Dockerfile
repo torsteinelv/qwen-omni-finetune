@@ -7,13 +7,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Sett arbeidsmappe
 WORKDIR /workspace
 
-# Kopier requirements først
+# Kopier requirements først (for bedre caching av docker layers)
 COPY requirements.txt .
-
-# --- FIX START ---
-# Avinstaller transformer-engine for å unngå "is_autocast_enabled" feil med nyere Transformers
-RUN pip uninstall -y transformer-engine flash-attn
-# --- FIX SLUTT ---
 
 # Installer biblioteker
 RUN pip install --upgrade pip && \
@@ -25,8 +20,8 @@ COPY src/ .
 # Gjør entrypoint-scriptet kjørbart
 RUN chmod +x entrypoint.sh
 
-# Opprett mapper
+# Opprett mapper for data og output som vi kan mounte til
 RUN mkdir -p /workspace/norsk_data /workspace/output
 
-# Start entrypoint
+# Start entrypoint scriptet når containeren kjører
 ENTRYPOINT ["./entrypoint.sh"]
