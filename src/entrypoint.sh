@@ -23,8 +23,8 @@ fi
 
 echo "============================================="
 echo "[2/2] Starter trening (train_talker.py)..."
-#python train_talker_only.py "$@"
-python train_talker_only_patch.py
+python train_talker_only.py "$@"
+#python train_talker_only_patch.py
 echo "============================================="
 echo "    JOBB FULLFØRT! Sjekk /workspace/output_talker    "
 echo "============================================="
