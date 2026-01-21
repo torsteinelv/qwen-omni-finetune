@@ -1,24 +1,21 @@
 # --- KJERNEBIBLIOTEKER (AI/LLM) ---
-# Vi låser transformers til en ny, stabil versjon som støtter Qwen2.5.
-# Hvis du MÅ bruke git-versjonen, må du låse commit-hash (se nederst).
 transformers==4.46.1
 
 # LoRA og optimalisering
 peft==0.13.2
-bitsandbytes==0.44.1
+# ENDRET: Vi oppgraderer fra 0.44.1 til 0.45.0 for å blidgjøre Moshi
+bitsandbytes>=0.45.0
 accelerate==1.0.1
 
 # Datahåndtering
-# Du ba spesifikt om denne versjonen, den er trygg.
 datasets==2.21.0
 huggingface_hub==0.26.2
 
-# --- LYD OG AUDIO (Kritisk for Talker) ---
+# --- LYD OG AUDIO ---
 librosa==0.10.2
 soundfile==0.12.1
 scipy==1.13.1
-
-# VIKTIG: Moshi må være nyere enn 0.1.0 for å fikse "autocast"-krasjet med ny PyTorch!
+# Moshi vil nå være fornøyd fordi bitsandbytes er ny nok
 moshi>=0.1.1
 
 # --- HJELPEVERKTØY ---
@@ -27,8 +24,4 @@ protobuf==3.20.3
 sentencepiece==0.2.0
 tiktoken==0.8.0
 
-# --- OBS: PYTORCH ---
-# Vi fjerner 'torch' og 'torchvision' herfra.
-# Grunnen er at NVIDIA-imaget allerede har en spesialbygd, super-optimalisert 
-# versjon av PyTorch installert. Hvis vi legger det her, risikerer pip å 
-# overskrive den med en tregere versjon eller ødelegge CUDA-driverne.
+# (Ingen torch her - det henter vi fra NVIDIA-imaget)
