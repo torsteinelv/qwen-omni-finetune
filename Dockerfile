@@ -6,7 +6,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # Sett arbeidsmappe
 WORKDIR /workspace
-
 # Kopier requirements
 COPY requirements.txt .
 
