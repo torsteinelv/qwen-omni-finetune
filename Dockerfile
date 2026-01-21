@@ -12,7 +12,7 @@ COPY requirements.txt .
 
 # --- FIX START ---
 # Avinstaller transformer-engine for å unngå "is_autocast_enabled" feil med nyere Transformers
-RUN pip uninstall -y transformer-engine
+RUN pip uninstall -y transformer-engine flash-attn
 # --- FIX SLUTT ---
 
 # Installer biblioteker
