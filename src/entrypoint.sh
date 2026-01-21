@@ -6,7 +6,8 @@ echo "    STARTER QWEN-2.5-OMNI FINETUNE PIPELINE   "
 echo "============================================="
 
 echo "[1/2] Kjører data-forberedelse (data.py)..."
-python data.py
+#python data.py
+python data_npsc.py
 
 # Lagt til python foran her:
 echo "[1.5/2] Koder lyd til tokens (prepare_talker.py)..."
