@@ -1,4 +1,4 @@
-git+https://github.com/huggingface/transformers.git
+git+https://github.com/huggingface/transformers.git@v4.57.6
 peft
 bitsandbytes
 accelerate
