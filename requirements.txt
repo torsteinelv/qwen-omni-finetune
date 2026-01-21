@@ -11,4 +11,4 @@ protobuf
 sentencepiece
 huggingface_hub
 datasets==2.21.0
-torchvision==0.17.1
+torchvision
