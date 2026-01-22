@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import torch
 import soundfile as sf
 import numpy as np
@@ -7,33 +8,51 @@ from transformers import MimiModel, AutoFeatureExtractor
 from tqdm import tqdm
 
 # --- KONFIGURASJON ---
-# Vi leser fra filen vi lagde med prepare_talker_instruct.py
-INPUT_JSONL = "talker_data_instruct.jsonl" 
-OUTPUT_JSONL = "norsk_data/talker_data.jsonl" # Dette er filen treningen ser etter
+# Vi leser filen som data_npsc.py ALLEREDE har laget (så slipper vi å laste ned på nytt)
+INPUT_JSONL = "/workspace/norsk_data/train.jsonl" 
 
-# Vi trenger ikke AUDIO_DIR lenger, for prepare_talker_instruct lagret absolutte stier!
+# Vi skriver direkte til filen som train_talker_only.py forventer
+OUTPUT_JSONL = "/workspace/norsk_data/talker_data.jsonl"
+
+# Instruksjons-maler (Dette er hjernen i "Instruction Tuning")
+INSTRUCTIONS = [
+    "Si dette på norsk: ",
+    "Les opp følgende setning: ",
+    "Uttal denne teksten: ",
+    "Kan du si dette for meg: ",
+    "Gjenta etter meg på norsk: ",
+    "Les denne norske teksten høyt: ",
+    "Hvordan sier man dette på norsk: ",
+    "Si følgende: ",
+    "Vennligst les dette: ",
+    "Snakk norsk og si: "
+]
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Bruker enhet: {device}")
 
-# 1. Last ned Mimi
 print("Laster Mimi-modellen...")
 feature_extractor = AutoFeatureExtractor.from_pretrained("kyutai/mimi")
 model = MimiModel.from_pretrained("kyutai/mimi").to(device)
 samplerate = feature_extractor.sampling_rate
 
 print(f"Konverterer data fra {INPUT_JSONL} -> {OUTPUT_JSONL}...")
+print("(Legger til instruksjoner + Mimi-koder i samme slengen)")
+
+# Sjekk inputfil
+if not os.path.exists(INPUT_JSONL):
+    # Fallback hvis stien er relativ
+    if os.path.exists("./norsk_data/train.jsonl"):
+        INPUT_JSONL = "./norsk_data/train.jsonl"
+    else:
+        print(f"❌ FEIL: Finner ikke {INPUT_JSONL}. Har data_npsc.py kjørt ferdig?")
+        exit(1)
+
+# Sørg for at output-mappen finnes
+os.makedirs(os.path.dirname(OUTPUT_JSONL), exist_ok=True)
 
 processed_count = 0
 skipped_count = 0
-
-# Sjekk at input-filen finnes
-if not os.path.exists(INPUT_JSONL):
-    print(f"❌ FEIL: Finner ikke {INPUT_JSONL}. Har du kjørt prepare_talker_instruct.py?")
-    exit(1)
-
-# Sjekk at output-mappen finnes
-os.makedirs(os.path.dirname(OUTPUT_JSONL), exist_ok=True)
 
 with open(INPUT_JSONL, "r", encoding="utf-8") as infile, \
      open(OUTPUT_JSONL, "w", encoding="utf-8") as outfile:
@@ -44,51 +63,45 @@ with open(INPUT_JSONL, "r", encoding="utf-8") as infile, \
         try:
             data = json.loads(line)
             
-            # --- ENDRING HER ---
-            # Vi henter direkte fra det formatet prepare_talker_instruct.py lagde
-            # Teksten inneholder allerede "Si dette på norsk: ..."
-            text_instruction = data["text"] 
+            # 1. Hent tekst og lydsti fra data_npsc.py formatet
+            # Formatet der er: {"messages": [..., {"role": "assistant", "content": "TEKSTEN"}], "audio": "STI"}
+            original_text = data["messages"][-1]["content"]
             audio_path = data["audio"]
             
             if not os.path.exists(audio_path):
-                print(f"Fant ikke lydfil: {audio_path}")
-                skipped_count += 1
-                continue
+                # Prøv relativ sti hvis absolutt feiler
+                rel_path = os.path.join("/workspace/norsk_data/audio_files", os.path.basename(audio_path))
+                if os.path.exists(rel_path):
+                    audio_path = rel_path
+                else:
+                    # print(f"⚠️ Fant ikke lydfil: {audio_path}") # Sparer loggen for spam
+                    skipped_count += 1
+                    continue
 
-            # --- MAGIEN (Mimi Encoding) ---
-            
-            # 1. Last lyd
+            # 2. Lag instruksjon (Instruction Tuning)
+            prompt_prefix = random.choice(INSTRUCTIONS)
+            instruction_text = f"{prompt_prefix}{original_text}"
+
+            # 3. Mimi Encoding
             audio_array, sr = sf.read(audio_path)
             
-            # 2. Resample hvis nødvendig (for sikkerhets skyld, selv om vi gjorde det sist)
-            if sr != samplerate:
-                # Enkel resampling eller skip. Siden vi lagret i 24k sist, bør dette gå bra.
-                pass 
-
-            # 3. Mono mix
+            # Mix til mono hvis stereo
             if len(audio_array.shape) > 1:
                 audio_array = audio_array.mean(axis=1)
             
-            # 4. Klargjør for Mimi
             inputs = feature_extractor(
                 raw_audio=audio_array, 
                 sampling_rate=samplerate, 
                 return_tensors="pt"
             ).to(device)
 
-            # 5. Encode
             with torch.no_grad():
                 encoder_outputs = model.encode(inputs["input_values"])
             
-            # 6. Hent koder (Codebook 0 er oftest det viktigste for innhold)
             codes = encoder_outputs.audio_codes[0, 0, :].cpu().numpy()
-            
-            # 7. Lag streng: "432 55 192 ..."
             token_string = " ".join(map(str, codes))
             
-            # --- LAGRE TIL TRENINGS-FORMAT ---
-            # Her bygger vi strukturen Qwen forventer under trening
-            
+            # 4. Lagre nytt format (Instruction -> Audio Tokens)
             new_entry = {
                 "messages": [
                     {
@@ -97,12 +110,10 @@ with open(INPUT_JSONL, "r", encoding="utf-8") as infile, \
                     },
                     {
                         "role": "user", 
-                        # Her bruker vi instruksjonen vi lagde (f.eks "Si dette på norsk: Hei")
-                        "content": text_instruction 
+                        "content": instruction_text 
                     },
                     {
                         "role": "assistant", 
-                        # Her er svaret: Lydkodene pakket inn i tags
                         "content": f"<|audio_bos|>{token_string}<|audio_eos|>"
                     }
                 ]
@@ -117,5 +128,6 @@ with open(INPUT_JSONL, "r", encoding="utf-8") as infile, \
             skipped_count += 1
 
 print(f"\n✅ Ferdig!")
-print(f"Prosesserte: {processed_count}")
-print(f"Feilet: {skipped_count}")
+print(f"Prosesserte klipp: {processed_count}")
+print(f"Feilet/Hoppet over: {skipped_count}")
+print(f"Klar for trening! Fil lagret: {OUTPUT_JSONL}")
