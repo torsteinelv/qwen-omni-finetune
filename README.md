@@ -1,39 +1,44 @@
-# Prosjektplan: Finjustering av Qwen-Omni for norsk tale
+# Project Plan: Norwegian Voice Fine-tuning for Qwen-Omni
 
-Målet med prosjektet er å gi **Qwen2.5-Omni-3B** evnen til å generere og forstå naturlig norsk tale ved å trene modellens "Thinker"-del til å produsere riktige lyd-tokens (Mimi).
-
-## 📋 Gjennomføringsplan
-
-### Fase 1: Datainnsamling og klargjøring
-* **Hente datasett**: Bruke åpne kilder som Stortingets talekorpus (NPSC) og Google FLEURS for å sikre bred dekning av norsk språk.
-* **Lydbehandling**: Resampling av all lyd til 24kHz for å matche kravene til Mimi-encoderen.
-* **Strukturering**: Generere metadatafiler (JSONL) som kobler tekstlig innhold mot lydfiler.
-
-### Fase 2: Audio-tokenisering (Talker-forberedelse)
-* **Konvertering**: Bruke Mimi-modellen til å oversette rå lydfiler til diskrete lyd-tokens.
-* **Datasett for "Talker"**: Opprette et spesialisert treningsdatasett der modellen lærer å forutsi disse tokensene basert på norsk tekst-input.
-
-### Fase 3: Trening med LoRA og kvantisering
-* **Effektivisering**: Implementere 8-bit eller 4-bit kvantisering for å redusere minnebruk under trening.
-* **Adapter-trening**: Bruke LoRA (Low-Rank Adaptation) for å kun trene de mest kritiske lagene i "Thinker"-modellen.
-* **Modell-wrapping**: Bruke en spesialtilpasset wrapper for å håndtere multimodale lag uten krasj ved lagring.
-
-### Fase 4: Evaluering og testing
-* **Inference-testing**: Generere tale fra tekst ved bruk av den ferdige adapteren for å sjekke kvalitet og naturlighet.
-* **Sammenligning**: Teste mot den originale basemodellen for å dokumentere forbedringen i norsk uttale.
+The primary goal of this project is to enable **Qwen2.5-Omni-3B** to generate natural Norwegian speech by training the model's "Thinker" component to predict the correct **Mimi** audio tokens.
 
 ---
 
-## 🚦 Statusrapport
+## 📋 Execution Plan
 
-### ✅ Gjennomført
-* **Infrastruktur**: Docker-miljøet er satt opp med alle nødvendige biblioteker som `transformers`, `peft` og `bitsandbytes`.
-* **Automatisering**: Et entrypoint-script er ferdigstilt som kjører hele rørledningen fra data til trening.
-* **Data-scripts**: Scripts for behandling av både NPSC og FLEURS er operative.
-* **Treningslogikk**: Implementert "Talker-only" trening med LoRA og minnehåndtering (Memory Fix).
-* **CI/CD**: GitHub Actions er konfigurert for automatisk bygging av Docker-imager.
+### Background & Previous Attempt
+* **Initial Training**: We previously conducted a full training run using the **Google FLEURS** dataset.
+* **Outcome**: The results were unsatisfactory, with poor audio quality and unnatural speech patterns.
+* **The Pivot**: Based on these results, we decided to restart the training using a larger, higher-quality dataset (NPSC) with a focus on better audio fidelity (24kHz) and natural prosody.
 
-### ⏳ Pågående / Neste steg
-* **Fullskala trening**: Kjøre trening på det utvidede NPSC-datasettet (mål: 15 000 klipp).
-* **Optimalisering**: Finjustere hyperparametre for bedre talekvalitet i norsk kontekst.
-* **Validering**: Gjennomføre omfattende tester av generert lyd via `test_speak.py`.
+### Phase 1: Data Acquisition & Refinement
+* **Primary Source**: Utilizing the **NPSC (National Parliamentary Speech Corpus)** to ensure high-fidelity Norwegian audio data.
+* **Processing**: Resampling all audio to 24kHz to meet the requirements of the Mimi encoder.
+* **Selection**: Targeting a dataset of approximately 15,000 clips to provide the model with enough variety for high-quality synthesis.
+
+### Phase 2: Audio Tokenization (Talker Preparation)
+* **Encoding**: Using the Mimi model to convert raw Norwegian waveforms into discrete audio tokens.
+* **Dataset Formatting**: Generating `talker_data.jsonl` where the speech is represented as tokens between `<|audio_bos|>` and `<|audio_eos|>` tags.
+
+### Phase 3: Fine-tuning with LoRA & Quantization
+* **Efficiency**: Implementing 8-bit quantization and LoRA (Low-Rank Adaptation) to train the model effectively on available hardware.
+* **Architecture**: Utilizing the `QwenOmniWrapper` to manage multimodal inputs and ensure stable checkpoint saving.
+
+### Phase 4: Validation & Testing
+* **Inference**: Running `test_speak.py` to generate Norwegian speech from text and verify the quality of the new adapter.
+* **Benchmarking**: Comparing the output against the original base model to document improvements.
+
+---
+
+## 🚦 Status Report
+
+### ✅ Completed
+* **Infrastructure**: Docker environment is fully configured with `transformers`, `peft`, and `bitsandbytes`.
+* **Automation**: The `entrypoint.sh` pipeline is finalized, connecting data processing, tokenization, and training.
+* **Data Scripts**: Refined scripts for NPSC data extraction and Mimi tokenization are operational.
+* **CI/CD**: GitHub Actions are set up for automated Docker builds.
+
+### ⏳ Ongoing / Next Steps
+* **Full-scale Training**: Currently executing the new training run on the 15,000 NPSC samples.
+* **Hyperparameter Tuning**: Monitoring the training loss and adjusting the learning rate for the "Talker-only" phase.
+* **Quality Assurance**: Evaluating generated audio samples to ensure the model correctly captures Norwegian phonemes and intonation.
