@@ -11,8 +11,8 @@ python data_npsc.py
 
 # Lagt til python foran her:
 echo "[1.5/2] Koder lyd til tokens (prepare_talker.py)..."
-python prepare_talker.py
-
+#python prepare_talker.py
+python prepare_talker_instruct.py
 # Sjekk talker_data siden det er den vi skal trene på nå
 if [ -f "./norsk_data/talker_data.jsonl" ]; then
     echo "Data OK! Fant talker_data.jsonl."
