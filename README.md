@@ -2,51 +2,59 @@
 
 The primary goal of this project is to enable **Qwen2.5-Omni-3B** to generate natural Norwegian speech.
 
-**Current Focus:** Transitioning from "Raw Audio Training" to **"Instruction Tuning"**. The previous model achieved excellent voice quality but suffered from behavioral issues (mimicking a politician too closely and ignoring user commands). We are now retraining to fix these logic issues while retaining the high-fidelity voice.
+**Current Focus:** **Run 4: "Official Prompt Alignment".**
+We discovered that Qwen-Omni has a hardcoded dependency on its specific system prompt to activate the audio module. We are now retraining with the official prompt to fix the "Model Collapse" issue experienced in Run 3.
 
 ---
 
-## 📋 Execution Plan
+## 🧪 Experiment Log & Post-Mortems (What NOT to do)
 
-### 🔄 Iteration History
-* **Attempt 1 (FLEURS):** Resulted in poor audio quality and unnatural speech patterns.
-* **Attempt 2 (NPSC Raw):** **Technical Success on Voice.** The model learned perfect Norwegian prosody, dialect, and intonation.
-    * *Issue Identified:* **"Catastrophic Forgetting" / Domain Overfitting.** The model learned the *style* of the Storting (Parliament) too well. It ignored instructions and instead generated endless, hallucinated political speeches (e.g., starting sentences with "Høre president..."), eventually leading to infinite loops and OOM crashes.
-* **Current Attempt (NPSC Instruct):** Retraining using an **Instruction Tuning** approach to restore the model's ability to follow commands (e.g., "Si dette på norsk") while retaining the high-quality voice.
+This log documents failed attempts to ensure we don't repeat mistakes.
 
-### Phase 1: Data Acquisition & Filtering
+| Attempt | Strategy | Outcome / Error | Root Cause & Lesson Learned |
+| :--- | :--- | :--- | :--- |
+| **1. FLEURS** | Train on `google/fleurs` (nb_no). | **Failure:** Robotic, unstable voice. | **Lesson:** Dataset quality is too low/varied. Need single-speaker, studio-quality data (NPSC). |
+| **2. NPSC Raw** | Train directly on `Text -> Audio` from Stortinget. | **Partial Success:** Perfect voice, but "Lobotomized". Model ignored instructions and hallucinated political speeches. **Glitch:** "Pai... Pai..." loops. | **Lesson 1:** Model overfitted on the *role* of a politician. Needs **Instruction Tuning**.<br>**Lesson 2:** Short clips (<1.5s) cause infinite repetition loops. Filter them out. |
+| **3. Instruct v1** | Instruction Tuning ("Si dette..."), but used standard "You are a helpful assistant" system prompt. | **Critical Failure:** Model Collapse during inference (`<ee> 1015 1015...`). Audio module failed to activate, leading to text-babling loops. | **Lesson:** **CRITICAL:** Qwen-Omni's `Talker` module is hardcoded to only activate if the System Prompt is exactly: *"You are Qwen, a virtual human..."*. We must train with this exact string. |
+| **Inference** | Load model in `bfloat16` on 24GB VRAM. | **OOM Crash:** `CUDA out of memory. Tried to allocate 8.00 GiB`. | **Lesson:** The audio generator (`code2wav`) requires a massive ~8GB temp buffer. **Fix:** Use 4-bit quantization AND Hybrid CPU Offload (`max_memory={'0': '5GiB', 'cpu': '60GiB'}`). |
+
+---
+
+## 📋 Execution Plan (Current Run)
+
+### Phase 1: Data Acquisition & Filtering (Revised)
 * **Source:** **NPSC (National Parliamentary Speech Corpus)**.
-* **Refinement:**
-    * **Filtering:** Removing all clips shorter than **1.5 seconds** to prevent "repetition loops" (the "Pai... Pai..." audio glitch).
-    * **Instruction Wrapping:** Instead of mapping `Text -> Audio` directly, we now map `User Instruction` -> `Audio`.
-    * **Format:** `User: "Les opp denne setningen: [Text]"` -> `Assistant: [Audio Tokens]`
+* **Filtering:** Strict filter: `1.5s < duration < 15.0s`. Removing short clips prevents the "Pai..." loop.
+* **Instruction Format:**
+    * **User:** `"Si dette på norsk: [Text]"`
+    * **System Prompt:** *MUST BE:* `"You are Qwen, a virtual human developed by the Qwen Team..."` (Official string).
+    * **Assistant:** `[Mimi Audio Tokens]`
 
-### Phase 2: Audio Tokenization & Formatting
-* **Script:** `prepare_talker_instruct.py`
-* **Method:** Generating `talker_data.jsonl` where every audio clip is paired with a unique command prompt (e.g., "Les opp denne setningen:", "Uttal dette på norsk:") to teach the model **obedience**.
+### Phase 2: Fine-tuning Strategy
+* **Method:** LoRA (Low-Rank Adaptation) on the `Thinker` module.
+* **Hyperparameters:**
+    * **Epochs:** `1` (Reduced from 2-3 to prevent "Politician Overfitting").
+    * **Learning Rate:** `2e-5` (Reduced from 1e-4 to prevent "Model Collapse" / Brain damage).
 
-### Phase 3: Fine-tuning (The "Lobotomy Fix")
-* **Strategy:** Reducing the number of epochs to prevent overfitting on the "political style" of the dataset.
-* **Goal:** To balance the high-fidelity voice generation with the logical capability to stop speaking when the sentence is finished (EOS token learning).
-
-### Phase 4: Validation & Debugging
-* **Inference Strategy:** Using `debug_norsk.py` with strict `max_new_tokens` limits (e.g., 50 tokens) to prevent VRAM crashes during testing.
-* **Metrics:** Evaluating both **Voice Quality** (MOS) and **Instruction Adherence** (Does it say exactly what is written, or does it start a debate?).
+### Phase 3: Validation
+* **Inference Strategy:**
+    * Use **Text Streaming** to detect babbling/loops early.
+    * Use **Hybrid Memory Offloading** (CPU + GPU) to prevent OOM crashes during audio generation.
+    * Use **Official System Prompt** during inference to ensure the audio module unlocks.
 
 ---
 
 ## 🚦 Status Report
 
 ### ✅ Completed & Verified
-* **Infrastructure:** Full pipeline (Docker, PEFT, BitsAndBytes) is stable.
-* **Voice Quality:** Verified high-quality Norwegian acoustics from the NPSC dataset (Attempt 2).
-* **Diagnosis:** Successfully identified why the model was "babbling" (Lack of EOS token training / Overfitting on long speeches).
-* **New Pipeline:** Created `prepare_talker_instruct.py` to handle data filtering (>1.5s) and instruction formatting.
+* **Infrastructure:** Docker pipeline, PEFT, BitsAndBytes, and Accelerate (CPU offload) are stable.
+* **Voice Acoustics:** Verified that the model *can* produce Norwegian sounds (proven by the "Pai..." glitch having a Norwegian accent).
+* **Diagnosis:** Identified the "System Prompt Lock" mechanism in Qwen-Omni source code.
 
-### ⚠️ Known Issues (Being Fixed)
-* **"Politician Mode":** The previous model would start sentences with "President..." regardless of the input text.
-* **Infinite Loops:** Without instruction tuning, the model often fails to generate an `<|im_end|>` token, leading to "echo" glitches (ASCII garbage) and memory crashes.
+### ⚠️ Known Issues (Being Fixed in Run 4)
+* **Identity Crisis:** The model must learn to accept the "You are Qwen" prompt while still speaking Norwegian.
+* **Memory Constraints:** Inference on consumer hardware (<40GB VRAM) requires aggressive offloading, making generation slow but possible.
 
-### ⏳ Ongoing / Next Steps
-* **Run 3:** Executing the **Instruction Tuned** training run now.
-* **Verification:** Testing if the new model can say "Hei, dette er en test" without adding a 5-minute speech about climate change.
+### ⏳ Next Steps
+* **Run 4 Training:** Execute training with `2e-5` LR and Official Prompt.
+* **Verification:** Test if the glitch is gone and if it obeys the "Si dette på norsk" command.
