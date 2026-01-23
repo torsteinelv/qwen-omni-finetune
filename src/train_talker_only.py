@@ -92,8 +92,8 @@ def train():
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=4,      # Økt fra 1 til 4 (bedre fart)
         gradient_accumulation_steps=4,      # Samler opp gradients (tilsvarer batch size 16)
-        learning_rate=1e-4,
-        num_train_epochs=2,                 # Kjører gjennom datasetet 3 ganger
+        learning_rate=2e-5,
+        num_train_epochs=1,                 # Kjører gjennom datasetet 3 ganger
         logging_steps=10,                   # Logger hvert 10. steg (ikke hvert eneste)
         save_strategy="steps",
         save_steps=100,                     # Lagrer checkpoint for hver 100. steg
