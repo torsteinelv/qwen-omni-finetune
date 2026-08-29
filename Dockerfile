@@ -1,5 +1,5 @@
 # Vi bruker NVIDIAs offisielle PyTorch image som base (inkluderer CUDA)
-FROM nvcr.io/nvidia/pytorch:25.05-py3
+FROM nvcr.io/nvidia/pytorch:26.08-py3
 
 # Unngå interaktive spørsmål under bygging
 ENV DEBIAN_FRONTEND=noninteractive
